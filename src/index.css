@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+html, body, #root { height: 100%; margin: 0; }
+body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; background: #f4f5f7; color: #1f2328; }
+
+/* TipTap 문서 스타일 */
+.ProseMirror { outline: none; min-height: 100%; }
+.ProseMirror p { margin: 0 0 .5em; }
+.ProseMirror h1 { font-size: 1.8em; font-weight: 700; margin: .6em 0 .3em; }
+.ProseMirror h2 { font-size: 1.4em; font-weight: 700; margin: .6em 0 .3em; }
+.ProseMirror ul { list-style: disc; padding-left: 1.5em; }
+.ProseMirror ol { list-style: decimal; padding-left: 1.5em; }
+.ProseMirror table { border-collapse: collapse; width: 100%; margin: .5em 0; table-layout: fixed; }
+.ProseMirror td, .ProseMirror th { border: 1px solid #c8ccd2; padding: 4px 8px; vertical-align: top; position: relative; }
+.ProseMirror th { background: #f0f2f5; font-weight: 600; }
+.ProseMirror .selectedCell::after { content: ""; position: absolute; inset: 0; background: rgba(59,130,246,.15); pointer-events: none; }
+.ProseMirror .column-resize-handle { position: absolute; right: -2px; top: 0; bottom: 0; width: 4px; background: #3b82f6; }
+
+/* HWP 커서 깜빡임 */
+@keyframes hwp-caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.hwp-caret {
+  animation: hwp-caret-blink 1.06s step-end infinite;
+}
+

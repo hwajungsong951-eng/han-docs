@@ -552,6 +552,96 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
       if (text) insert(text);
     };
 
+    // 복사 / 잘라내기 / 붙여넣기
+    const handleCopy = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const d = docRef.current;
+      if (!d) return;
+      const range = selectionRange();
+      try {
+        let text = "";
+        let html = "";
+        if (range) {
+          if (range.start.cell) {
+            d.copySelectionInCellByPath(
+              range.start.sec, range.start.cell.parentPara, cellPathJsonFor(range.start),
+              range.start.para, range.start.off, range.end.para, range.end.off);
+            try {
+              html = d.exportSelectionInCellHtmlByPath(
+                range.start.sec, range.start.cell.parentPara, cellPathJsonFor(range.start),
+                range.start.para, range.start.off, range.end.para, range.end.off);
+            } catch { /* HTML 실패 시 텍스트만 */ }
+          } else {
+            d.copySelection(range.start.sec, range.start.para, range.start.off, range.end.para, range.end.off);
+            try {
+              html = d.exportSelectionHtml(
+                range.start.sec, range.start.para, range.start.off, range.end.para, range.end.off);
+            } catch { /* HTML 실패 시 텍스트만 */ }
+          }
+          text = d.getClipboardText();
+        } else if (pos?.cell) {
+          // 선택 없이 표 안에 있으면 표 전체를 복사한다.
+          const path = pos.cell.path;
+          const last = path[path.length - 1];
+          const parentPath = path.slice(0, -1);
+          const parentJson = parentPath.length ? JSON.stringify(parentPath) : "[]";
+          d.copyControl(pos.sec, pos.cell.parentPara, parentJson, last.controlIndex);
+          text = d.getClipboardText() || "[표]";
+          try { html = d.exportControlHtml(pos.sec, pos.cell.parentPara, parentJson, last.controlIndex); } catch { /* HTML 실패 시 텍스트만 */ }
+        } else {
+          return;
+        }
+        e.preventDefault();
+        if (text) e.clipboardData.setData("text/plain", text);
+        if (html) e.clipboardData.setData("text/html", html);
+      } catch (err) { onError(`복사 실패: ${errorText(err)}`); }
+    };
+
+    const handleCut = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const range = selectionRange();
+      if (!range) { handleCopy(e); return; }
+      handleCopy(e);
+      edit((d) => {
+        deleteRange(d, range);
+        setPos(range.start); setAnchor(null);
+      });
+    };
+
+    const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const d = docRef.current;
+      if (!d || !pos) return;
+      e.preventDefault();
+      const osText = e.clipboardData.getData("text/plain");
+      const internalText = d.getClipboardText();
+      const norm = (s: string) => s.replace(/\r\n/g, "\n");
+      const useInternal = d.hasInternalClipboard() && !!osText && norm(osText) === norm(internalText);
+      try {
+        if (useInternal) {
+          const range = selectionRange();
+          edit((doc) => {
+            let p = pos;
+            if (range) { deleteRange(doc, range); p = range.start; }
+            if (doc.clipboardHasControl()) {
+              if (p.cell) { onError("표는 본문에만 붙여넣을 수 있습니다"); return; }
+              const r = JSON.parse(doc.pasteControl(p.sec, p.para, p.off));
+              setPos({ sec: p.sec, para: (r.paraIdx ?? p.para) + 1, off: 0 });
+              setAnchor(null);
+            } else if (p.cell) {
+              const r = JSON.parse(doc.pasteInternalInCellByPath(
+                p.sec, p.cell.parentPara, cellPathJsonFor(p), p.off));
+              setPos({ ...p, off: r.charOffset ?? p.off });
+              setAnchor(null);
+            } else {
+              const r = JSON.parse(doc.pasteInternal(p.sec, p.para, p.off));
+              setPos({ sec: p.sec, para: r.paraIdx ?? p.para, off: r.charOffset ?? p.off });
+              setAnchor(null);
+            }
+          });
+        } else if (osText) {
+          insert(osText);
+        }
+      } catch (err) { onError(`붙여넣기 실패: ${errorText(err)}`); }
+    };
+
     const selectAll = () => {
       const d = docRef.current;
       if (!d || !pos) return;
@@ -1114,6 +1204,9 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
             ref={inputRef}
             className="fixed opacity-0 w-px h-px -left-10"
             onKeyDown={onKeyDown}
+            onCopy={handleCopy}
+            onCut={handleCut}
+            onPaste={handlePaste}
             onCompositionEnd={(e) => commitTextarea(e.currentTarget)}
             onInput={(e) => {
               if ((e.nativeEvent as InputEvent).isComposing) return;

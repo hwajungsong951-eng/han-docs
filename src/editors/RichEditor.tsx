@@ -8,6 +8,8 @@ import mammoth from "mammoth";
 import { asBlob } from "html-docx-js-typescript";
 import html2canvas from "html2canvas-pro";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import { HwpDocument } from "../wasm/rhwp.js";
+import { ensureWasm } from "../wasm/init";
 import {
   Bold, Italic, Underline, Strikethrough, AlignLeft, AlignCenter, AlignRight, AlignJustify,
   List, ListOrdered, Table as TableIcon, Undo2, Redo2, Rows3, Columns3, Trash2, Merge, Split, Settings2,
@@ -124,6 +126,18 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
         if (fmt === "pdf") {
           if (!pageRef.current) throw new Error("PDF로 변환할 편집 영역이 없습니다");
           return await elementToPdf(pageRef.current, pageSettings);
+        }
+        if (fmt === "hwp" || fmt === "hwpx") {
+          if (!editor) throw new Error("편집기 준비 안됨");
+          await ensureWasm();
+          const doc = HwpDocument.createEmpty();
+          try {
+            doc.createBlankDocument();
+            doc.pasteHtml(0, 0, 0, editor.getHTML());
+            return fmt === "hwp" ? doc.exportHwp() : doc.exportHwpx();
+          } finally {
+            doc.free();
+          }
         }
         if (!editor) throw new Error("편집기 준비 안됨");
         if (fmt === "txt") return new TextEncoder().encode(editor.getText({ blockSeparator: "\n" }));

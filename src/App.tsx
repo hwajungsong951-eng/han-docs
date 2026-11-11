@@ -9,7 +9,7 @@ type Doc = { path: string | null; format: DocFormat; bytes: Uint8Array | null; k
 /** 형식별 저장 가능 대상 */
 const SAVE_TARGETS: Record<DocFormat, ExportFormat[]> = {
   hwp: ["hwp", "hwpx", "pdf"], hwpx: ["hwpx", "hwp", "pdf"],
-  docx: ["docx", "txt", "pdf"], txt: ["txt", "docx", "pdf"],
+  docx: ["docx", "txt", "pdf", "hwp", "hwpx"], txt: ["txt", "docx", "pdf", "hwp", "hwpx"],
 };
 
 export default function App() {
@@ -35,22 +35,32 @@ export default function App() {
 
   const saveFile = async (saveAs = false, force?: ExportFormat) => {
     if (!doc || !editorRef.current) return;
-    const wantsPdf = force === "pdf";
-    let path = wantsPdf ? null : doc.path;
-    if (saveAs || !path || wantsPdf) {
-      const def = wantsPdf ? "새 문서.pdf" : (path ?? `새 문서.${doc.format}`);
-      const targets = wantsPdf ? (["pdf"] as ExportFormat[]) : SAVE_TARGETS[doc.format];
+    let path = force ? null : doc.path;
+    if (saveAs || !path || force) {
+      const def = force ? `새 문서.${force}` : (path ?? `새 문서.${doc.format}`);
+      const targets = force ? ([force] as ExportFormat[]) : SAVE_TARGETS[doc.format];
       path = await pickSavePath(def, targets);
       if (!path) return;
     }
-    const fmt = wantsPdf ? "pdf" : (saveFormatOf(path) ?? doc.format);
+    const fmt = force ?? saveFormatOf(path) ?? doc.format;
     try {
       if (fmt === "pdf") notify("PDF로 변환 중...");
+      else if (fmt === "hwp" || fmt === "hwpx") notify("HWP로 변환 중...");
       const data = await editorRef.current.exportAs(fmt);
       await writeBytes(path, data);
       if (fmt === "pdf") {
         // PDF는 내보내기이므로 원본 문서 경로/저장 상태는 그대로 둔다.
         notify(`PDF로 저장됨: ${baseName(path)}`);
+      } else if (fmt === "hwp" || fmt === "hwpx") {
+        if (doc.format === "docx" || doc.format === "txt") {
+          // Word/TXT를 HWP로 변환한 뒤 HWP 편집기로 전환한다.
+          setDoc({ path, format: fmt, bytes: data, key: Date.now() });
+          setDirty(false);
+          notify(`${fmt.toUpperCase()}로 변환 저장됨: ${baseName(path)}`);
+          return;
+        }
+        setDoc({ ...doc, path, format: fmt }); setDirty(false);
+        notify(`저장됨: ${baseName(path)}`);
       } else {
         setDoc({ ...doc, path }); setDirty(false);
         notify(`저장됨: ${baseName(path)}`);
@@ -84,6 +94,9 @@ export default function App() {
         <HBtn onClick={() => saveFile(false)} icon={<Save size={16} />} disabled={!doc}>저장</HBtn>
         <HBtn onClick={() => saveFile(true)} disabled={!doc}>다른 이름으로</HBtn>
         <HBtn onClick={() => saveFile(true, "pdf")} icon={<FileDown size={16} />} disabled={!doc}>PDF</HBtn>
+        {(doc?.format === "docx" || doc?.format === "txt") && (
+          <HBtn onClick={() => saveFile(true, "hwp")} disabled={!doc}>HWP로 저장</HBtn>
+        )}
         <div className="flex-1 text-center text-sm text-gray-600 truncate">
           {doc && (<>{doc.path ? baseName(doc.path) : `새 문서.${doc.format}`}{dirty && <span className="text-blue-600"> •</span>}
             <span className="ml-2 text-[11px] uppercase px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">{doc.format}</span></>)}

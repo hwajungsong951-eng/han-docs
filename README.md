@@ -8,6 +8,9 @@ Tauri + React + rhwp(WASM) 기반입니다.
 - HWP / HWPX 문서 열기·편집·저장
 - DOCX / TXT 문서 열기·편집·저장
 - HWP/HWPX/DOCX/TXT → PDF 저장
+- **DOCX/TXT → HWP/HWPX 변환 저장**
+  - DOCX/TXT를 연 뒤 `HWP로 저장` 버튼 또는 `다른 이름으로`에서 HWP/HWPX 선택
+  - 문단·목록·표는 HWP로 변환되며, 복잡한 레이아웃·이미지는 일부 제한될 수 있습니다.
 - 글자 크기·색·글꼴·굵게/기울임/밑줄/취소선
 - 마우스 드래그, Shift+방향키, Ctrl+A, 더블클릭 단어 선택
 - **복사/잘라내기/붙여넣기 (Ctrl+C / Ctrl+X / Ctrl+V)**

@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from "react";
-import init, { HwpDocument } from "../wasm/rhwp.js";
+import { HwpDocument } from "../wasm/rhwp.js";
+import { ensureWasm } from "../wasm/init";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readBytes } from "../lib/fileio";
 import { PDFDocument } from "pdf-lib";
@@ -10,18 +11,6 @@ import {
 import { TBtn, Sep, TSelect, SIZES } from "../components/ui";
 import type { ExportFormat } from "../lib/fileio";
 import type { DocEditorHandle } from "./RichEditor";
-
-let wasmReady: Promise<unknown> | null = null;
-const ensureWasm = () => {
-  if (!wasmReady) {
-    // 실패한 Promise를 캐시하지 않는다. 다음 문서를 열 때 초기화를 다시 시도한다.
-    wasmReady = init().catch((err) => {
-      wasmReady = null;
-      throw err;
-    });
-  }
-  return wasmReady;
-};
 
 type CellEntry = { controlIndex: number; cellIndex: number; cellParaIndex: number };
 type CellPos = { parentPara: number; path: CellEntry[] };

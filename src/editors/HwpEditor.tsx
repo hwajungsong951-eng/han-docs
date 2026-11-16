@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from "react";
 import { HwpDocument } from "../wasm/rhwp.js";
 import { ensureWasm } from "../wasm/init";
+import { readText, writeHtml, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { open } from "@tauri-apps/plugin-dialog";
 import { readBytes } from "../lib/fileio";
 import { PDFDocument } from "pdf-lib";
@@ -541,14 +542,23 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
       if (text) insert(text);
     };
 
-    // 복사 / 잘라내기 / 붙여넣기
-    const handleCopy = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-      const d = docRef.current;
-      if (!d) return;
-      const range = selectionRange();
+    // 복사 / 잘라내기 / 붙여넣기 (Tauri 네이티브 클립보드)
+    const writeClipboard = async (text: string, html: string) => {
       try {
-        let text = "";
-        let html = "";
+        if (html) await writeHtml(html, text);
+        else await writeText(text);
+      } catch {
+        try { await navigator.clipboard?.writeText(text); } catch { /* 무시 */ }
+      }
+    };
+
+    const copyInternal = (): { text: string; html: string } | null => {
+      const d = docRef.current;
+      if (!d) return null;
+      const range = selectionRange();
+      let text = "";
+      let html = "";
+      try {
         if (range) {
           if (range.start.cell) {
             d.copySelectionInCellByPath(
@@ -577,32 +587,41 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
           text = d.getClipboardText() || "[표]";
           try { html = d.exportControlHtml(pos.sec, pos.cell.parentPara, parentJson, last.controlIndex); } catch { /* HTML 실패 시 텍스트만 */ }
         } else {
-          return;
+          return null;
         }
-        e.preventDefault();
-        if (text) e.clipboardData.setData("text/plain", text);
-        if (html) e.clipboardData.setData("text/html", html);
-      } catch (err) { onError(`복사 실패: ${errorText(err)}`); }
+        return { text, html };
+      } catch (err) {
+        onError(`복사 실패: ${errorText(err)}`);
+        return null;
+      }
     };
 
-    const handleCut = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const copySelectionToClipboard = async () => {
+      const data = copyInternal();
+      if (data) await writeClipboard(data.text, data.html);
+    };
+
+    const cutSelectionToClipboard = async () => {
       const range = selectionRange();
-      if (!range) { handleCopy(e); return; }
-      handleCopy(e);
+      if (!range) { await copySelectionToClipboard(); return; }
+      const data = copyInternal();
+      if (data) await writeClipboard(data.text, data.html);
       edit((d) => {
         deleteRange(d, range);
         setPos(range.start); setAnchor(null);
       });
     };
 
-    const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasteFromClipboard = async () => {
       const d = docRef.current;
       if (!d || !pos) return;
-      e.preventDefault();
-      const osText = e.clipboardData.getData("text/plain");
+      let osText = "";
+      try { osText = await readText(); }
+      catch { try { osText = await navigator.clipboard?.readText() ?? ""; } catch { /* 무시 */ } }
+      if (!osText) return;
       const internalText = d.getClipboardText();
       const norm = (s: string) => s.replace(/\r\n/g, "\n");
-      const useInternal = d.hasInternalClipboard() && !!osText && norm(osText) === norm(internalText);
+      const useInternal = d.hasInternalClipboard() && norm(osText) === norm(internalText);
       try {
         if (useInternal) {
           const range = selectionRange();
@@ -625,7 +644,7 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
               setAnchor(null);
             }
           });
-        } else if (osText) {
+        } else {
           insert(osText);
         }
       } catch (err) { onError(`붙여넣기 실패: ${errorText(err)}`); }
@@ -767,6 +786,9 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
     const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.nativeEvent.isComposing || !pos) return;
       const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key.toLowerCase() === "c") { e.preventDefault(); void copySelectionToClipboard(); return; }
+      if (mod && e.key.toLowerCase() === "x") { e.preventDefault(); void cutSelectionToClipboard(); return; }
+      if (mod && e.key.toLowerCase() === "v") { e.preventDefault(); void pasteFromClipboard(); return; }
       if (mod && e.key.toLowerCase() === "a") { e.preventDefault(); selectAll(); return; }
       if (mod && e.key.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
       if (mod && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); return; }
@@ -1193,9 +1215,6 @@ export const HwpEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null;
             ref={inputRef}
             className="fixed opacity-0 w-px h-px -left-10"
             onKeyDown={onKeyDown}
-            onCopy={handleCopy}
-            onCut={handleCut}
-            onPaste={handlePaste}
             onCompositionEnd={(e) => commitTextarea(e.currentTarget)}
             onInput={(e) => {
               if ((e.nativeEvent as InputEvent).isComposing) return;

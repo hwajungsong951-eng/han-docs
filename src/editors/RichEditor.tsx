@@ -1,5 +1,5 @@
 import { forwardRef, useImperativeHandle, useEffect, useRef, useState } from "react";
-import { useEditor, EditorContent, useEditorState } from "@tiptap/react";
+import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TableKit } from "@tiptap/extension-table";
 import { TextStyle, Color, FontFamily, FontSize } from "@tiptap/extension-text-style";
@@ -84,6 +84,7 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
     const pagePanelRef = useRef<HTMLDivElement>(null);
     const [pageSettings, setPageSettings] = useState<RichPageSettings>(RICH_A4_DEFAULT);
     const [pageOpen, setPageOpen] = useState(false);
+    const [editorSlow, setEditorSlow] = useState(false);
 
     useEffect(() => {
       if (!pageOpen) return;
@@ -101,8 +102,15 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
         TextAlign.configure({ types: ["heading", "paragraph"] }),
       ],
       content: "",
+      shouldRerenderOnTransaction: true,
       onUpdate: () => onDirty(),
     });
+
+    useEffect(() => {
+      if (editor) { setEditorSlow(false); return; }
+      const t = setTimeout(() => setEditorSlow(true), 5000);
+      return () => clearTimeout(t);
+    }, [editor]);
 
     // 파일 로드
     useEffect(() => {
@@ -150,20 +158,28 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
       },
     }), [editor, pageSettings]);
 
-    const s = useEditorState({
-      editor,
-      selector: ({ editor: e }) => e ? {
-        bold: e.isActive("bold"), italic: e.isActive("italic"), underline: e.isActive("underline"), strike: e.isActive("strike"),
-        left: e.isActive({ textAlign: "left" }), center: e.isActive({ textAlign: "center" }),
-        right: e.isActive({ textAlign: "right" }), justify: e.isActive({ textAlign: "justify" }),
-        inTable: e.isActive("table"),
-        font: (e.getAttributes("textStyle").fontFamily as string) ?? "",
-        size: ((e.getAttributes("textStyle").fontSize as string) ?? "").replace("pt", ""),
-        color: (e.getAttributes("textStyle").color as string) ?? "#000000",
-      } : null,
-    });
+    if (!editor) {
+      return (
+        <div className="grid h-full place-items-center text-sm text-gray-500">
+          {editorSlow ? "편집기를 초기화하지 못했습니다. 앱을 다시 실행해 주세요." : "문서 편집기를 준비하는 중…"}
+        </div>
+      );
+    }
 
-    if (!editor || !s) return null;
+    const s = {
+      bold: editor.isActive("bold"),
+      italic: editor.isActive("italic"),
+      underline: editor.isActive("underline"),
+      strike: editor.isActive("strike"),
+      left: editor.isActive({ textAlign: "left" }),
+      center: editor.isActive({ textAlign: "center" }),
+      right: editor.isActive({ textAlign: "right" }),
+      justify: editor.isActive({ textAlign: "justify" }),
+      inTable: editor.isActive("table"),
+      font: (editor.getAttributes("textStyle").fontFamily as string) ?? "",
+      size: ((editor.getAttributes("textStyle").fontSize as string) ?? "").replace("pt", ""),
+      color: (editor.getAttributes("textStyle").color as string) ?? "#000000",
+    };
     const c = () => editor.chain().focus();
 
     return (

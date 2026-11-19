@@ -18,7 +18,12 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const editorRef = useRef<DocEditorHandle>(null);
 
-  const notify = useCallback((m: string) => { setToast(m); setTimeout(() => setToast(null), 3500); }, []);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const notify = useCallback((m: string) => {
+    setToast(m);
+    if (toastTimer.current) clearTimeout(toastTimer.current); // 이전 알림의 타이머가 새 알림을 지우지 않도록
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  }, []);
   const markDirty = useCallback(() => setDirty(true), []);
 
   const openFile = async () => {
@@ -107,7 +112,7 @@ export default function App() {
       <main className="flex-1 min-h-0">
         {!doc && <Welcome onOpen={openFile} onNew={newFile} />}
         {doc && isHwp && <HwpEditor key={doc.key} ref={editorRef} bytes={doc.bytes} onDirty={markDirty} onError={notify} />}
-        {doc && !isHwp && <RichEditor key={doc.key} ref={editorRef} bytes={doc.bytes} format={doc.format} onDirty={markDirty} />}
+        {doc && !isHwp && <RichEditor key={doc.key} ref={editorRef} bytes={doc.bytes} format={doc.format} onDirty={markDirty} onError={notify} />}
       </main>
 
       {toast && (

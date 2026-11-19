@@ -1,11 +1,10 @@
 import { forwardRef, useImperativeHandle, useEffect, useRef, useState } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
+import { useEditor, EditorContent, Node as TipTapNode, mergeAttributes } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { TableKit } from "@tiptap/extension-table";
 import { TextStyle, Color, FontFamily, FontSize } from "@tiptap/extension-text-style";
 import TextAlign from "@tiptap/extension-text-align";
 import mammoth from "mammoth";
-import { asBlob } from "html-docx-js-typescript";
 import html2canvas from "html2canvas-pro";
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 import { HwpDocument } from "../wasm/rhwp.js";
@@ -16,6 +15,62 @@ import {
 } from "lucide-react";
 import { TBtn, Sep, TSelect, FONTS, SIZES } from "../components/ui";
 import type { DocFormat, ExportFormat } from "../lib/fileio";
+import { tiptapJsonToDocx, recoverAltChunkHtml } from "../lib/docxWriter";
+import { htmlForHwp } from "../lib/hwpHtml";
+import { decodeTxt, encodeTxt, type TxtEncoding } from "../lib/textCodec";
+
+/** DOCX 안의 그림을 보존하기 위한 인라인 이미지 노드 */
+const ImageNode = TipTapNode.create({
+  name: "image",
+  inline: true,
+  group: "inline",
+  atom: true,
+  draggable: true,
+  addAttributes() {
+    return {
+      src: { default: null },
+      alt: { default: null },
+      width: { default: null, parseHTML: (el: HTMLElement) => el.getAttribute("width") },
+      height: { default: null, parseHTML: (el: HTMLElement) => el.getAttribute("height") },
+    };
+  },
+  parseHTML() { return [{ tag: "img[src]" }]; },
+  renderHTML({ HTMLAttributes }) { return ["img", mergeAttributes(HTMLAttributes, { style: "max-width:100%;height:auto" })]; },
+});
+
+const num = (v: string, d: number) => { const n = parseFloat(v); return Number.isFinite(n) ? n : d; };
+
+/** mammoth 가 버리는 문단 정렬 / 글자 크기를 HTML 에 살려 둔다. */
+const MAMMOTH_SIZES = [6, 7, 8, 9, 10, 10.5, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48, 60, 72];
+const MAMMOTH_STYLE_MAP = [
+  "p[style-name='Title'] => h1:fresh",
+  "p[style-name='Subtitle'] => h2:fresh",
+  "p[style-name='__al:center'] => p.al-center:fresh",
+  "p[style-name='__al:right'] => p.al-right:fresh",
+  "p[style-name='__al:both'] => p.al-justify:fresh",
+  ...MAMMOTH_SIZES.map((n) => `r[style-name='__fs:${n}'] => span.fs-${String(n).replace(".", "_")}:fresh`),
+];
+function mammothTransform(doc: any): any {
+  const walk = (el: any): any => {
+    if (el.children) el = { ...el, children: el.children.map(walk) };
+    if (el.type === "paragraph" && !el.styleName && !el.numbering && (el.alignment === "center" || el.alignment === "right" || el.alignment === "both"))
+      return { ...el, styleId: null, styleName: `__al:${el.alignment}` };
+    if (el.type === "run" && !el.styleName && el.fontSize && MAMMOTH_SIZES.includes(el.fontSize) && el.fontSize !== 10.5)
+      return { ...el, styleId: null, styleName: `__fs:${el.fontSize}` };
+    return el;
+  };
+  return walk(doc);
+}
+function mammothHtmlToTipTap(html: string): string {
+  const d = new DOMParser().parseFromString(`<body>${html}</body>`, "text/html");
+  d.querySelectorAll<HTMLElement>("p[class^='al-']").forEach((p) => {
+    const a = p.className.replace("al-", ""); p.removeAttribute("class"); p.style.textAlign = a;
+  });
+  d.querySelectorAll<HTMLElement>("span[class^='fs-']").forEach((sp) => {
+    const n = sp.className.replace("fs-", "").replace("_", "."); sp.removeAttribute("class"); sp.style.fontSize = `${n}pt`;
+  });
+  return d.body.innerHTML;
+}
 
 export interface DocEditorHandle {
   exportAs(fmt: ExportFormat): Promise<Uint8Array>;
@@ -77,14 +132,17 @@ async function elementToPdf(el: HTMLElement, settings: RichPageSettings): Promis
 }
 
 /** docx / txt 편집기 (TipTap 기반) */
-export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null; format: DocFormat; onDirty: () => void }>(
-  ({ bytes, format, onDirty }, ref) => {
+export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null; format: DocFormat; onDirty: () => void; onError?: (m: string) => void }>(
+  ({ bytes, format, onDirty, onError }, ref) => {
     const isTxt = format === "txt";
     const pageRef = useRef<HTMLDivElement>(null);
     const pagePanelRef = useRef<HTMLDivElement>(null);
     const [pageSettings, setPageSettings] = useState<RichPageSettings>(RICH_A4_DEFAULT);
     const [pageOpen, setPageOpen] = useState(false);
     const [editorSlow, setEditorSlow] = useState(false);
+    const [loadError, setLoadError] = useState<string | null>(null);
+    // TXT 는 열었던 인코딩/줄바꿈 방식 그대로 저장한다.
+    const txtMeta = useRef<{ encoding: TxtEncoding; eol: "\r\n" | "\n" }>({ encoding: "utf-8", eol: "\r\n" });
 
     useEffect(() => {
       if (!pageOpen) return;
@@ -97,11 +155,14 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
     const editor = useEditor({
       extensions: [
         StarterKit,
+        ImageNode,
         TableKit.configure({ table: { resizable: true } }),
         TextStyle, Color, FontFamily, FontSize,
         TextAlign.configure({ types: ["heading", "paragraph"] }),
       ],
       content: "",
+      autofocus: false,
+      editable: true,
       shouldRerenderOnTransaction: true,
       onUpdate: () => onDirty(),
     });
@@ -115,18 +176,45 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
     // 파일 로드
     useEffect(() => {
       if (!editor) return;
+      let cancelled = false;
+      // 불러온 내용은 실행 취소(Ctrl+Z) 기록에 남기지 않는다. (남기면 Ctrl+Z 한 번에 문서가 비어 버린다)
+      const load = (html: string) => {
+        if (cancelled || editor.isDestroyed) return;
+        editor.chain().setMeta("addToHistory", false).setContent(html || "<p></p>", { emitUpdate: false }).run();
+        editor.commands.focus("start");
+      };
       (async () => {
-        if (!bytes) { editor.commands.setContent("<p></p>", { emitUpdate: false }); return; }
-        if (format === "docx") {
-          const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-          const { value } = await mammoth.convertToHtml({ arrayBuffer: buf });
-          editor.commands.setContent(value || "<p></p>", { emitUpdate: false });
-        } else {
-          const text = decodeText(bytes);
-          const html = text.split(/\r?\n/).map((l) => `<p>${escapeHtml(l)}</p>`).join("");
-          editor.commands.setContent(html, { emitUpdate: false });
+        setLoadError(null);
+        if (!bytes) { load("<p></p>"); return; }
+        try {
+          if (format === "docx") {
+            const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+            const { value, messages } = await mammoth.convertToHtml({ arrayBuffer: buf }, {
+              styleMap: MAMMOTH_STYLE_MAP,
+              transformDocument: mammothTransform,
+            } as any);
+            if (messages.some((m) => /altChunk/.test(m.message)) && !value.trim()) {
+              // 예전 버전 앱이 저장한 DOCX (내용이 altChunk 로 들어 있음) → HTML 을 꺼내 복구한다.
+              const recovered = await recoverAltChunkHtml(bytes);
+              if (!recovered) throw new Error("이전 버전 앱에서 저장된 DOCX 라 내용을 읽을 수 없습니다");
+              load(recovered);
+              onError?.("이전 버전 앱으로 저장된 DOCX 를 복구해서 열었습니다. 다시 저장하면 정상 DOCX 로 저장됩니다.");
+              return;
+            }
+            load(mammothHtmlToTipTap(value));
+          } else {
+            const { text, encoding, eol } = decodeTxt(bytes);
+            txtMeta.current = { encoding, eol };
+            const html = text.split(/\r\n|\n|\r/).map((l) => `<p>${escapeHtml(l)}</p>`).join("");
+            load(html);
+          }
+        } catch (e) {
+          const msg = `문서를 불러오지 못했습니다: ${e instanceof Error ? e.message : String(e)}`;
+          setLoadError(msg); onError?.(msg);
+          load("<p></p>");
         }
       })();
+      return () => { cancelled = true; };
     }, [editor, bytes, format]);
 
     useImperativeHandle(ref, () => ({
@@ -141,18 +229,31 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
           const doc = HwpDocument.createEmpty();
           try {
             doc.createBlankDocument();
-            doc.pasteHtml(0, 0, 0, editor.getHTML());
+            // 편집기의 페이지 여백(mm)을 HWP 용지 설정에 먼저 반영하고, 그 본문 폭에 맞춰 표 너비를 계산한다.
+            const hu = (mm: number) => Math.round((mm * 7200) / 25.4);
+            doc.setPageDef(0, JSON.stringify({
+              width: hu(210), height: hu(297),
+              marginTop: hu(num(pageSettings.top, 15)), marginBottom: hu(num(pageSettings.bottom, 15)),
+              marginLeft: hu(num(pageSettings.left, 20)), marginRight: hu(num(pageSettings.right, 20)),
+              marginHeader: hu(num(pageSettings.header, 10)), marginFooter: hu(num(pageSettings.footer, 10)),
+            }));
+            const info = JSON.parse(doc.getPageInfo(0)) as { bodyLeft: number; bodyRight: number };
+            doc.pasteHtml(0, 0, 0, htmlForHwp(editor.getHTML(), info.bodyRight - info.bodyLeft - 24) /* rhwp 는 붙여넣은 표를 본문보다 약 24px 안쪽에서 시작한다 */);
             return fmt === "hwp" ? doc.exportHwp() : doc.exportHwpx();
           } finally {
             doc.free();
           }
         }
         if (!editor) throw new Error("편집기 준비 안됨");
-        if (fmt === "txt") return new TextEncoder().encode(editor.getText({ blockSeparator: "\n" }));
+        if (fmt === "txt") {
+          const text = editor.getText({ blockSeparator: "\n" }).replace(/\n/g, txtMeta.current.eol);
+          return encodeTxt(text, txtMeta.current.encoding);
+        }
         if (fmt === "docx") {
-          const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${editor.getHTML()}</body></html>`;
-          const blob = (await asBlob(html)) as Blob;
-          return new Uint8Array(await blob.arrayBuffer());
+          return await tiptapJsonToDocx(editor.getJSON(), {
+            top: num(pageSettings.top, 15), bottom: num(pageSettings.bottom, 15), left: num(pageSettings.left, 20), right: num(pageSettings.right, 20),
+            header: num(pageSettings.header, 10), footer: num(pageSettings.footer, 10), number: pageSettings.number,
+          });
         }
         throw new Error(`${fmt} 형식으로는 저장할 수 없습니다`);
       },
@@ -261,11 +362,24 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
             )}
           </div>
         </div>
-        <div className="flex-1 overflow-auto py-8">
-          <div className="relative mx-auto w-fit">
-            <div ref={pageRef} className={`bg-white shadow-sm border border-gray-200 ${isTxt ? "max-w-4xl font-mono text-sm" : "max-w-[210mm]"} min-h-[297mm]`}
-              style={{ padding: `${pageSettings.top}mm ${pageSettings.right}mm ${pageSettings.bottom}mm ${pageSettings.left}mm` }}>
-              <EditorContent editor={editor} className="h-full" />
+        {loadError && (
+          <div className="mx-4 mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{loadError}</div>
+        )}
+        {/* 회색 작업 영역 어디를 눌러도 편집기에 커서가 들어가도록 한다 */}
+        <div className="flex-1 overflow-auto py-8 px-4" onMouseDown={(e) => {
+          if (!(e.target as HTMLElement).closest(".ProseMirror") && !(e.target as HTMLElement).closest("button,input,select")) {
+            e.preventDefault(); editor.chain().focus("end").run();
+          }
+        }}>
+          <div className="relative mx-auto" style={{ width: "210mm", maxWidth: "none" }}>
+            <div ref={pageRef} className={`bg-white shadow-sm border border-gray-200 box-border w-full ${isTxt ? "font-mono text-sm txt-page" : ""}`}
+              style={{
+                minHeight: "297mm",
+                padding: `${pageSettings.top}mm ${pageSettings.right}mm ${pageSettings.bottom}mm ${pageSettings.left}mm`,
+                // 페이지 빈 곳을 눌러도 편집기 안으로 인식되도록 편집 영역을 페이지 높이만큼 채운다
+                ["--pm-min" as string]: `calc(297mm - ${num(pageSettings.top, 15) + num(pageSettings.bottom, 15)}mm)`,
+              }}>
+              <EditorContent editor={editor} />
             </div>
             {pageSettings.number !== "none" && (
               <div className="pointer-events-none absolute left-0 right-0 text-center text-[11px] text-gray-500"
@@ -279,11 +393,6 @@ export const RichEditor = forwardRef<DocEditorHandle, { bytes: Uint8Array | null
     );
   },
 );
-
-function decodeText(b: Uint8Array): string {
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(b); }
-  catch { return new TextDecoder("euc-kr").decode(b); } // 한글 윈도우 ANSI 텍스트 대응
-}
 
 function escapeHtml(s: string) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") || "<br>";

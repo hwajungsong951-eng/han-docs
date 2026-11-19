@@ -4,8 +4,14 @@ html, body, #root { height: 100%; margin: 0; }
 body { font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; background: #f4f5f7; color: #1f2328; }
 
 /* TipTap 문서 스타일 */
-.ProseMirror { outline: none; min-height: 100%; }
+.ProseMirror { outline: none; min-height: var(--pm-min, 100%); white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.ProseMirror img { display: inline-block; max-width: 100%; height: auto; }
+.ProseMirror img.ProseMirror-selectednode { outline: 2px solid #3b82f6; }
+.ProseMirror .tableWrapper { overflow-x: auto; }
+.ProseMirror blockquote { border-left: 3px solid #d0d5dd; margin: .5em 0; padding-left: 1em; color: #555; }
+.ProseMirror pre { background: #f4f5f7; padding: .6em .8em; border-radius: 6px; font-family: ui-monospace, Consolas, monospace; }
 .ProseMirror p { margin: 0 0 .5em; }
+.txt-page .ProseMirror p { margin: 0; line-height: 1.6; }
 .ProseMirror h1 { font-size: 1.8em; font-weight: 700; margin: .6em 0 .3em; }
 .ProseMirror h2 { font-size: 1.4em; font-weight: 700; margin: .6em 0 .3em; }
 .ProseMirror ul { list-style: disc; padding-left: 1.5em; }
